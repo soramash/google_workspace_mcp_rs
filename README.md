@@ -5,22 +5,24 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust 1.98+](https://img.shields.io/badge/Rust-1.98%2B-orange.svg)](https://www.rust-lang.org/)
 
-Google WorkspaceをModel Context Protocol（MCP）から操作する、Pythonランタイム不要のRustネイティブサーバです。Gmail、Drive、Calendar、Docs、Sheets、Slides、Forms、Tasks、Contacts、Chat、Apps Script、Google Programmable Searchの合計121ツールを提供します。
+[日本語](README_ja.md)
 
-現在はローカルのstdioとStreamable HTTPの両方に対応しています。将来の常設リモートMCP運用を想定し、OAuth 2.1、trusted gateway、Origin検証、principal単位のsession分離、resource limit、non-root Docker imageを実装しています。
+A native Rust server for accessing Google Workspace through the Model Context Protocol (MCP), with no Python runtime required. It provides 121 tools across Gmail, Drive, Calendar, Docs, Sheets, Slides, Forms, Tasks, Contacts, Chat, Apps Script, and Google Programmable Search.
 
-## プロジェクト方針
+Both local stdio and Streamable HTTP transports are supported. For future long-running remote MCP deployments, the server implements OAuth 2.1, trusted gateway integration, Origin validation, per-principal session isolation, resource limits, and a non-root Docker image.
 
-このrepositoryでは、今後次の方針で開発・保守します。
+## Project policy
 
-- `src/`以下のRust実装を唯一の正式なserver実装とする
-- serverのbuild・test・release・container実行にPythonを使用しない
-- 新機能とbug fixはRust側へ実装する
-- 121ツールのMCP contractとセキュリティ境界を維持する
-- remote deploymentではHTTPSと検証済みprincipalを必須とする
-- dependencyは`Cargo.toml`でversionを固定し、`Cargo.lock`を更新・reviewする
+This repository will be developed and maintained according to the following policies:
 
-`main.py`、`pyproject.toml`、`auth/`、`core/`、各`g*` directoryなどのPython資産は、移行元を確認するためのlegacy referenceです。Rust serverからは起動・importされず、Docker build contextにも含まれません。今後の機能追加先にはしないでください。
+- The Rust implementation under `src/` is the only authoritative server implementation.
+- Python is not used to build, test, release, or run the server or its container.
+- New features and bug fixes are implemented in Rust.
+- The MCP contract for all 121 tools and its security boundaries are preserved.
+- Remote deployments require HTTPS and a verified principal.
+- Dependency versions are pinned in `Cargo.toml`; changes to `Cargo.lock` must be reviewed.
+
+The Python assets, including `main.py`, `pyproject.toml`, `auth/`, `core/`, and the various `g*` directories, are legacy references retained for reviewing the migration source. The Rust server neither starts nor imports them, and they are excluded from the Docker build context. Do not use them as the target for future feature development.
 
 ## Native tool coverage
 
@@ -34,36 +36,36 @@ Google WorkspaceをModel Context Protocol（MCP）から操作する、Pythonラ
 | Apps Script | 15 | Custom Search | 2 |
 | **Total** | **121** | | |
 
-compiled registryの状態は次のコマンドで確認できます。
+Check the compiled registry with:
 
 ```bash
 cargo run --locked -- --rust-migration-status
 ```
 
-期待される結果は`native tools: 121/121`、`unavailable tools: 0/121`です。
+The expected output is `native tools: 121/121` and `unavailable tools: 0/121`.
 
 ## Architecture
 
-主要な実装は以下にあります。
+The main implementation is organized as follows:
 
 | Path | Responsibility |
 |---|---|
-| `src/main.rs` | Rust server entrypoint |
-| `src/mcp.rs` | JSON-RPC/MCP lifecycle、contract読込、schema validation |
-| `src/transport.rs` | stdio、stateful/stateless Streamable HTTP、attachments |
-| `src/oauth.rs` | internal/external OAuth 2.1、trusted gateway、legacy auth callback |
-| `src/auth.rs` | request-local principal、Google token、credential store、service account/DWD |
-| `src/registry.rs` | 121ツールのservice/tier/read-only registry |
-| `src/native/` | Google Workspace各serviceのnative tool implementation |
-| `contracts/` | legacy、OAuth 2.1、gateway別の固定MCP tool contract |
+| `src/main.rs` | Rust server entry point |
+| `src/mcp.rs` | JSON-RPC/MCP lifecycle, contract loading, and schema validation |
+| `src/transport.rs` | stdio, stateful/stateless Streamable HTTP, and attachments |
+| `src/oauth.rs` | Internal/external OAuth 2.1, trusted gateway, and legacy authentication callback |
+| `src/auth.rs` | Request-local principal, Google token, credential store, and service account/DWD |
+| `src/registry.rs` | Service/tier/read-only registry for 121 tools |
+| `src/native/` | Native tool implementations for each Google Workspace service |
+| `contracts/` | Fixed MCP tool contracts for legacy, OAuth 2.1, and gateway modes |
 
 ## Requirements
 
-- Rust 1.98以上
-- Google Cloud project
-- 利用するGoogle APIの有効化
-- OAuth client、またはservice account / trusted gateway設定
-- remote deploymentの場合はHTTPS endpointとreverse proxyまたはload balancer
+- Rust 1.98 or later
+- A Google Cloud project
+- The Google APIs you plan to use must be enabled
+- An OAuth client, or service account / trusted gateway configuration
+- For remote deployments, an HTTPS endpoint and a reverse proxy or load balancer
 
 ## Build
 
@@ -72,13 +74,13 @@ cargo build --release --locked
 ./target/release/workspace-mcp-rs --rust-migration-status
 ```
 
-binaryは`target/release/workspace-mcp-rs`に生成されます。
+The binary is generated at `target/release/workspace-mcp-rs`.
 
-## ローカルMCPとして利用する
+## Use as a local MCP server
 
 ### stdio
 
-legacy stdio modeは意図的にsingle-userです。principalは`USER_GOOGLE_EMAIL`で固定され、tool argumentやsession IDから切り替えることはできません。
+Legacy stdio mode is intentionally single-user. The principal is fixed by `USER_GOOGLE_EMAIL` and cannot be changed through tool arguments or a session ID.
 
 ```bash
 export USER_GOOGLE_EMAIL="user@example.com"
@@ -90,9 +92,9 @@ export GOOGLE_OAUTH_CLIENT_SECRET="..."
   --tool-tier complete
 ```
 
-初回は`start_google_auth`を呼び出してGoogle認可を完了します。credentialは既定で`~/.google_workspace_mcp/credentials`へ保存されます。保存先は`WORKSPACE_MCP_CREDENTIALS_DIR`で変更できます。
+On first use, call `start_google_auth` to complete Google authorization. Credentials are stored in `~/.google_workspace_mcp/credentials` by default. Set `WORKSPACE_MCP_CREDENTIALS_DIR` to use a different location.
 
-MCP client設定例:
+Example MCP client configuration:
 
 ```json
 {
@@ -110,52 +112,52 @@ MCP client設定例:
 }
 ```
 
-## リモートMCPとして利用する
+## Use as a remote MCP server
 
-remote MCP endpointはStreamable HTTPの`/mcp`です。開発環境ではloopback HTTPを使用できますが、internetや社内networkへ公開するときは必ずHTTPS terminationを配置してください。
+The remote MCP endpoint is the Streamable HTTP endpoint at `/mcp`. Loopback HTTP is acceptable in development, but HTTPS termination is mandatory when exposing the server to the internet or a corporate network.
 
-### Endpoint一覧
+### Endpoints
 
 | Path | Purpose |
 |---|---|
-| `/mcp` | MCP Streamable HTTP（POST/GET/DELETE） |
-| `/health` | process health check |
+| `/mcp` | MCP Streamable HTTP (POST/GET/DELETE) |
+| `/health` | Process health check |
 | `/.well-known/oauth-authorization-server` | OAuth authorization server metadata |
-| `/.well-known/oauth-protected-resource/mcp` | protected resource metadata |
+| `/.well-known/oauth-protected-resource/mcp` | Protected resource metadata |
 | `/register` | Dynamic Client Registration |
 | `/authorize` | OAuth authorization endpoint |
 | `/oauth2callback` | Google OAuth callback |
 | `/token` | OAuth token endpoint |
-| `/attachments/{file_id}` | authenticated、owner-scoped attachment download |
+| `/attachments/{file_id}` | Authenticated, owner-scoped attachment download |
 
-### 推奨する最初の構成
+### Recommended initial deployment
 
-最初のremote deploymentは次の構成を推奨します。
+For the first remote deployment, use the following configuration:
 
-1. serverは1 instanceで起動する
-2. Dockerまたはrelease binaryを使用する
-3. nginx、Caddy、Cloud Load BalancerなどでHTTPSを終端する
-4. native internal OAuth 2.1を有効にする
-5. serverはprivate networkの`0.0.0.0:8000`でlistenする
-6. public internetへは`443/tcp`だけを公開する
-7. credential volumeとsecretをbackup対象・access制御対象にする
+1. Run a single server instance.
+2. Use Docker or the release binary.
+3. Terminate HTTPS with nginx, Caddy, Cloud Load Balancer, or an equivalent service.
+4. Enable the native internal OAuth 2.1 implementation.
+5. Have the server listen on `0.0.0.0:8000` within a private network.
+6. Expose only `443/tcp` to the public internet.
+7. Back up the credential volume and secrets, and apply appropriate access controls.
 
-### Google Cloud側の設定
+### Google Cloud configuration
 
-例としてpublic URLを`https://mcp.example.com`とする場合、Google OAuth clientのauthorized redirect URIへ次を登録します。
+If the public URL is `https://mcp.example.com`, for example, register the following as an authorized redirect URI for the Google OAuth client:
 
 ```text
 https://mcp.example.com/oauth2callback
 ```
 
-Google OAuth callbackと、MCP client自身のOAuth callbackは別物です。
+The Google OAuth callback and the MCP client's own OAuth callback are separate endpoints.
 
-- `GOOGLE_OAUTH_REDIRECT_URI`: Googleからこのserverへ戻るURL
-- `WORKSPACE_MCP_ALLOWED_CLIENT_REDIRECT_URIS`: このserverからMCP clientへ戻るURLのallowlist
+- `GOOGLE_OAUTH_REDIRECT_URI`: the URL Google uses to return to this server
+- `WORKSPACE_MCP_ALLOWED_CLIENT_REDIRECT_URIS`: the allowlist of URLs this server may use to return to MCP clients
 
-### Production用環境変数
+### Production environment variables
 
-`.env`の例です。実際のsecretをrepositoryへcommitしないでください。
+The following is an example `.env` file. Never commit real secrets to the repository.
 
 ```dotenv
 MCP_ENABLE_OAUTH21=true
@@ -167,17 +169,17 @@ GOOGLE_OAUTH_REDIRECT_URI=https://mcp.example.com/oauth2callback
 WORKSPACE_MCP_HOST=0.0.0.0
 WORKSPACE_MCP_PORT=8000
 
-# 利用するMCP clientのcallbackだけを列挙する
+# List only the callbacks used by your MCP clients
 WORKSPACE_MCP_ALLOWED_CLIENT_REDIRECT_URIS=https://client.example.com/oauth/callback,http://127.0.0.1:*/callback
 
-# Browser由来requestを許可する場合だけ明示する
+# Set this only when requests from browser clients must be allowed
 WORKSPACE_MCP_ALLOWED_ORIGINS=https://mcp.example.com,https://client.example.com
 
-# Google client secretとは別の32 bytes以上のrandom signing materialを推奨
+# Use at least 32 bytes of random signing material, separate from the Google client secret
 FASTMCP_SERVER_AUTH_GOOGLE_JWT_SIGNING_KEY=replace-with-at-least-32-random-bytes
 ```
 
-signing materialは例えば次のように生成できます。
+For example, generate signing material with:
 
 ```bash
 openssl rand -hex 32
@@ -187,19 +189,19 @@ openssl rand -hex 32
 
 ```bash
 docker compose up --build -d
-# 古いCompose環境では: docker-compose up --build -d
+# For older Compose installations: docker-compose up --build -d
 ```
 
-`docker-compose.yml`は次のhardeningを適用します。
+`docker-compose.yml` applies the following hardening measures:
 
-- Rust binaryだけを含むmulti-stage image
-- non-root user（UID/GID 10001）
-- read-only root filesystem
+- A multi-stage image containing only the Rust binary
+- A non-root user (UID/GID 10001)
+- A read-only root filesystem
 - `no-new-privileges`
-- `noexec,nosuid`のbounded `/tmp`
-- credential専用volume
+- A bounded `/tmp` with `noexec,nosuid`
+- A dedicated credential volume
 
-状態確認:
+Check the deployment status with:
 
 ```bash
 docker compose ps
@@ -207,7 +209,7 @@ docker compose logs -f gws_mcp
 curl --fail https://mcp.example.com/health
 ```
 
-### Binaryを直接起動する
+### Run the binary directly
 
 ```bash
 ./target/release/workspace-mcp-rs \
@@ -215,9 +217,9 @@ curl --fail https://mcp.example.com/health
   --tool-tier complete
 ```
 
-常設運用ではsystemd、launchd、supervisorなどを使用し、process restartとsecret injectionを管理してください。server logはstderrへ出力されるため、service managerまたはcontainer runtimeで収集します。
+For long-running deployments, use systemd, launchd, supervisor, or a similar process manager to handle restarts and secret injection. Server logs are written to stderr and should be collected by the service manager or container runtime.
 
-### nginx reverse proxy例
+### nginx reverse proxy example
 
 ```nginx
 server {
@@ -236,26 +238,26 @@ server {
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 
-        # Streamable HTTPのlong-lived GET/SSEをbufferしない
+        # Do not buffer long-lived Streamable HTTP GET/SSE connections
         proxy_buffering off;
         proxy_read_timeout 3600s;
     }
 }
 ```
 
-public URLはforwarded headerから推測させず、`WORKSPACE_EXTERNAL_URL`へ明示してください。
+Set the public URL explicitly with `WORKSPACE_EXTERNAL_URL`; do not infer it from forwarded headers.
 
-## Authentication mode
+## Authentication modes
 
 | Mode | Main configuration | Recommended use |
 |---|---|---|
-| Legacy single-user | `USER_GOOGLE_EMAIL` | local stdio only |
-| Internal OAuth 2.1 | `MCP_ENABLE_OAUTH21=true` | 最初のsingle-instance remote deployment |
-| External Google bearer | OAuth 2.1 + `EXTERNAL_OAUTH21_PROVIDER=true` | Google bearer tokenを外部で取得する構成 |
-| Trusted gateway | `TRUST_GATEWAY_IDENTITY=true` + JWKS | identity-aware proxy配下、organization利用 |
-| Service account / DWD | service account key + domain policy | 管理されたWorkspace domain |
+| Legacy single-user | `USER_GOOGLE_EMAIL` | Local stdio only |
+| Internal OAuth 2.1 | `MCP_ENABLE_OAUTH21=true` | Initial single-instance remote deployment |
+| External Google bearer | OAuth 2.1 + `EXTERNAL_OAUTH21_PROVIDER=true` | Deployments that obtain Google bearer tokens externally |
+| Trusted gateway | `TRUST_GATEWAY_IDENTITY=true` + JWKS | Organization use behind an identity-aware proxy |
+| Service account / DWD | Service account key + domain policy | Managed Workspace domains |
 
-trusted gatewayでは少なくとも次を設定します。
+At a minimum, configure the following for a trusted gateway:
 
 ```dotenv
 TRUST_GATEWAY_IDENTITY=true
@@ -265,20 +267,20 @@ GATEWAY_IDENTITY_ISSUER=https://gateway.example.com
 GATEWAY_IDENTITY_ALGORITHMS=ES256
 ```
 
-JWKS URLはSSRF対策の検証対象です。HMAC tokenや未検証のidentity headerは使用できません。
+The JWKS URL is validated to mitigate SSRF. HMAC tokens and unverified identity headers are not accepted.
 
-service accountでrequestごとにDWD subjectが変わる構成では、verified gateway principalに加えて`DWD_ALLOWED_DOMAINS`が必要です。
+If the DWD subject changes per request when using a service account, `DWD_ALLOWED_DOMAINS` is required in addition to a verified gateway principal.
 
-## Stateful、stateless、水平スケール
+## Stateful, stateless, and horizontal scaling
 
 ### Stateful mode
 
-既定のStreamable HTTP modeです。MCP sessionはprocess memoryに保存され、verified principalへbindされます。
+This is the default Streamable HTTP mode. MCP sessions are stored in process memory and bound to a verified principal.
 
-- attachment downloadを利用できる
-- session lifecycleをserverが保持する
-- restart時にsessionは失われる
-- load balancer配下ではsticky sessionが必要
+- Attachment downloads are available.
+- The server maintains the session lifecycle.
+- Sessions are lost when the server restarts.
+- Sticky sessions are required behind a load balancer.
 
 ### Stateless mode
 
@@ -286,24 +288,24 @@ service accountでrequestごとにDWD subjectが変わる構成では、verified
 WORKSPACE_MCP_STATELESS_MODE=true
 ```
 
-OAuth 2.1でのみ使用できます。MCP requestごとに独立して処理できるためcontainer運用と水平スケールに向きますが、server-side attachment storageは利用できません。
+Stateless mode is available only with OAuth 2.1. Because each MCP request can be handled independently, this mode is well suited to containers and horizontal scaling, but server-side attachment storage is unavailable.
 
-### 現在のHA上の注意
+### Current high-availability considerations
 
-MCP session、Dynamic Client Registration、authorization code、local reference tokenなどのruntime stateはprocess-localです。internal OAuth 2.1を複数instanceへ拡張する場合、単純なround-robinだけでは不十分です。
+Runtime state such as MCP sessions, Dynamic Client Registration, authorization codes, and local reference tokens is process-local. When scaling internal OAuth 2.1 across multiple instances, simple round-robin load balancing is not sufficient.
 
-現時点では次のいずれかを選択してください。
+For now, choose one of the following approaches:
 
-- internal OAuth 2.1を1 instanceで運用する
-- sticky sessionと計画的な再認証を使用する
-- external Google bearer modeを使用する
-- trusted gatewayでidentityを各requestに付与する
+- Run internal OAuth 2.1 on a single instance.
+- Use sticky sessions and plan for reauthentication.
+- Use external Google bearer mode.
+- Use a trusted gateway to attach identity to every request.
 
-shared state backendを実装するまでは、internal OAuth stateを複数instanceで共有できるとは扱わないでください。
+Until a shared state backend is implemented, do not assume internal OAuth state can be shared across multiple instances.
 
 ## Resource limits
 
-### HTTP session
+### HTTP sessions
 
 | Environment variable | Default |
 |---|---:|
@@ -312,7 +314,7 @@ shared state backendを実装するまでは、internal OAuth stateを複数inst
 | `WORKSPACE_MCP_SESSION_IDLE_TTL_SECONDS` | 1800 |
 | `WORKSPACE_MCP_MAX_BODY_BYTES` | 4194304 |
 
-capacity到達時はHTTP `429`、expired sessionまたは別principalのsession IDは情報漏えいを防ぐため同じ`404`を返します。
+The server returns HTTP `429` when capacity is reached. To prevent information disclosure, both an expired session and a session ID belonging to another principal produce the same `404` response.
 
 ### OAuth Dynamic Client Registration
 
@@ -321,15 +323,15 @@ capacity到達時はHTTP `429`、expired sessionまたは別principalのsession 
 | `WORKSPACE_MCP_MAX_REGISTERED_CLIENTS` | 4096 |
 | `WORKSPACE_MCP_REGISTERED_CLIENT_TTL_SECONDS` | 86400 |
 
-`WORKSPACE_MCP_ALLOWED_CLIENT_REDIRECT_URIS`はinternal OAuth 2.1で必須です。loopback wildcardはport部分だけに使用でき、pathは完全一致します。
+`WORKSPACE_MCP_ALLOWED_CLIENT_REDIRECT_URIS` is required for internal OAuth 2.1. A loopback wildcard may be used only for the port; the path must match exactly.
 
 ```text
 http://127.0.0.1:*/callback
 ```
 
-## Tool selectionと権限縮小
+## Tool selection and least privilege
 
-全121ツールが既定で有効です。本番では必要なserviceと権限だけに絞ることを推奨します。
+All 121 tools are enabled by default. In production, restrict the server to only the services and permissions you need.
 
 ```bash
 workspace-mcp-rs --tools gmail drive calendar
@@ -339,7 +341,7 @@ workspace-mcp-rs --permissions gmail=read drive=write tasks=manage
 workspace-mcp-rs --disabled-tools send_gmail_message manage_drive_access
 ```
 
-対応する環境変数:
+Corresponding environment variables:
 
 - `WORKSPACE_MCP_TOOLS`
 - `WORKSPACE_MCP_TOOL_TIER`
@@ -349,27 +351,27 @@ workspace-mcp-rs --disabled-tools send_gmail_message manage_drive_access
 
 ## Security checklist for remote deployment
 
-公開前に最低限次を確認してください。
+Before making a deployment public, verify at least the following:
 
-- [ ] public endpointがHTTPSのみである
-- [ ] `WORKSPACE_EXTERNAL_URL`が実際のHTTPS URLと一致する
-- [ ] Google OAuth redirect URIが完全一致する
-- [ ] DCR redirect URI allowlistを必要なclientだけに限定した
-- [ ] browser clientを使う場合、Origin allowlistを必要なoriginだけに限定した
-- [ ] legacy modeをpublic endpointで使用していない
-- [ ] OAuth secret、signing key、service account keyをsecret managerで管理した
-- [ ] credential volumeがbackup・暗号化・access制御されている
-- [ ] `/mcp`を直接internetへ平文公開していない
-- [ ] tool/service/read-only permissionを最小化した
-- [ ] session/client/body limitをtraffic量に合わせて確認した
-- [ ] reverse proxyとapplication logを監視している
-- [ ] process restart時にsession・OAuth runtime stateが失われることを運用へ織り込んだ
+- [ ] The public endpoint accepts HTTPS only.
+- [ ] `WORKSPACE_EXTERNAL_URL` matches the actual HTTPS URL.
+- [ ] The Google OAuth redirect URI matches exactly.
+- [ ] The DCR redirect URI allowlist contains only the required clients.
+- [ ] When browser clients are used, the Origin allowlist contains only the required origins.
+- [ ] Legacy mode is not used on a public endpoint.
+- [ ] OAuth secrets, signing keys, and service account keys are managed by a secret manager.
+- [ ] The credential volume is backed up, encrypted, and access-controlled.
+- [ ] `/mcp` is not exposed directly to the internet over plaintext HTTP.
+- [ ] Tool, service, and read-only permissions are minimized.
+- [ ] Session, client, and body limits are appropriate for the expected traffic.
+- [ ] Reverse proxy and application logs are monitored.
+- [ ] Operations account for the loss of sessions and OAuth runtime state after a process restart.
 
-credential directoryはUnixで`0700`へ補正され、symlinkを拒否します。credential fileは`O_NOFOLLOW`でopenされ、current user所有、regular file、mode `0600`、hardlink数1を要求します。
+On Unix, the credential directory is corrected to mode `0700`, and symlinks are rejected. Credential files are opened with `O_NOFOLLOW` and must be owned by the current user, be regular files, have mode `0600`, and have exactly 1 hard link.
 
-request identityはverified transport authenticationからのみ取得されます。tool argumentや`Mcp-Session-Id`をidentityとして信頼しません。
+Request identity is derived only from verified transport authentication. Tool arguments and `Mcp-Session-Id` are never trusted as identity.
 
-詳細な脆弱性対応履歴は[`docs/security/vulnerability-remediation-plan.md`](docs/security/vulnerability-remediation-plan.md)を参照してください。
+See [`docs/security/vulnerability-remediation-plan.md`](docs/security/vulnerability-remediation-plan.md) for the detailed vulnerability remediation history.
 
 ## Monitoring and operations
 
@@ -379,7 +381,7 @@ request identityはverified transport authenticationからのみ取得されま�
 curl --fail https://mcp.example.com/health
 ```
 
-正常時は次の形式を返します。
+A healthy server returns:
 
 ```json
 {
@@ -390,27 +392,27 @@ curl --fail https://mcp.example.com/health
 }
 ```
 
-`/health`はprocessがrequestを受けられることを示します。Google API、Google OAuth、JWKS providerまで含むend-to-end readinessではありません。外部dependencyのsynthetic monitoringは別途用意してください。
+`/health` indicates that the process can accept requests. It is not an end-to-end readiness check for Google APIs, Google OAuth, or the JWKS provider. Configure separate synthetic monitoring for external dependencies.
 
 ### Graceful shutdown
 
-SIGINT/SIGTERMを受けるとHTTP serverはgraceful shutdownへ移行します。deployment時はload balancerからinstanceを外してから終了し、long-lived requestのdrain時間を確保してください。
+On SIGINT/SIGTERM, the HTTP server begins a graceful shutdown. During deployments, remove the instance from the load balancer before stopping it, and allow enough drain time for long-lived requests.
 
-### Backup対象
+### Backup scope
 
-- credential volume
-- deployment secret
-- OAuth client設定
-- service account keyを使う場合はその管理情報
-- reverse proxy設定
+- Credential volume
+- Deployment secrets
+- OAuth client configuration
+- Service account key management information, when a service account key is used
+- Reverse proxy configuration
 
-MCP sessionやin-memory OAuth runtime stateはbackup対象ではなく、restart後に再確立します。
+MCP sessions and in-memory OAuth runtime state are not backed up and must be re-established after a restart.
 
 ## Maintenance
 
-### 日常のvalidation
+### Routine validation
 
-変更後は以下をすべて実行します。
+Run all of the following after making changes:
 
 ```bash
 cargo fmt --all -- --check
@@ -420,39 +422,39 @@ cargo test --locked --all-targets --all-features
 cargo run --locked -- --rust-migration-status
 ```
 
-期待値:
+Expected results:
 
-- test failureが0件
-- warningが0件
-- native toolsが121/121
-- unavailable toolsが0/121
+- 0 test failures
+- 0 warnings
+- 121/121 native tools
+- 0/121 unavailable tools
 
-### Contractを変更するとき
+### Changing contracts
 
-contractは以下の3 modeで別々に固定されています。
+Contracts are fixed separately for the following three modes:
 
 - `contracts/tools-legacy.json`: 121 tools
-- `contracts/tools-oauth21.json`: 120 tools（`start_google_auth`を除く）
+- `contracts/tools-oauth21.json`: 120 tools (excluding `start_google_auth`)
 - `contracts/tools-gateway.json`: 121 tools
 
-新規tool、argument、schemaを変更するときは、Rust implementation、`src/registry.rs`、対象contractを同じchangeで更新してください。少なくとも以下を確認します。
+When adding a tool or changing an argument or schema, update the Rust implementation, `src/registry.rs`, and the applicable contracts in the same change. Verify at least the following:
 
-- `tool_count`と実際の配列長が一致する
-- tool nameが重複していない
-- legacyとgatewayのname setが一致する
-- OAuth 2.1はlegacyから`start_google_auth`だけを除いた集合である
-- `tools/list`が期待するschemaを返す
-- native dispatchに全toolの到達先がある
+- `tool_count` matches the actual array length.
+- Tool names are unique.
+- Legacy and gateway name sets match.
+- The OAuth 2.1 set contains every legacy tool except `start_google_auth`.
+- `tools/list` returns the expected schema.
+- Native dispatch has a destination for every tool.
 
-### Dependency update
+### Dependency updates
 
-1. `Cargo.toml`のversionを意図的に更新する
-2. `cargo update -p <crate> --precise <version>`でlockfileを更新する
-3. release noteとsecurity advisoryを確認する
-4. full validationとDocker buildを実行する
-5. image内に不要なruntimeやtoolが増えていないことを確認する
+1. Deliberately update the version in `Cargo.toml`.
+2. Update the lockfile with `cargo update -p <crate> --precise <version>`.
+3. Review the release notes and security advisories.
+4. Run the full validation suite and a Docker build.
+5. Confirm that the image contains no unnecessary runtimes or tools.
 
-server dependencyへopen version rangeを追加しないでください。
+Do not add open version ranges to server dependencies.
 
 ### Docker validation
 
@@ -463,42 +465,42 @@ docker compose config
 docker compose build
 ```
 
-runtime imageには`python`、`python3`、`pip`、`uv`を導入しません。
+Do not install `python`, `python3`, `pip`, or `uv` in the runtime image.
 
 ## Release procedure
 
-1. `Cargo.toml`と`server.json`のversionを揃える
-2. full validationを実行する
-3. release binaryとDocker imageをbuildする
-4. containerの`/health`と`--rust-migration-status`を確認する
-5. semver tagを作成する
-6. OCI imageをregistryへpublishする
-7. digestを記録し、deploymentでは可能ならdigest pinする
-8. stagingでOAuth login、MCP initialize、`tools/list`、代表的なread/write toolを確認する
-9. productionへ段階的にrolloutする
+1. Keep the versions in `Cargo.toml` and `server.json` in sync.
+2. Run the full validation suite.
+3. Build the release binary and Docker image.
+4. Check the container's `/health` endpoint and `--rust-migration-status` output.
+5. Create a semver tag.
+6. Publish the OCI image to the registry.
+7. Record the digest and pin deployments to it whenever possible.
+8. In staging, verify OAuth login, MCP initialization, `tools/list`, and representative read/write tools.
+9. Roll out to production gradually.
 
-`server.json`は`ghcr.io/soramash/google_workspace_mcp_rs`をOCI package identifierとして予定しています。registryへ実際にpublishするまでは、利用可能なpublic imageとして案内しないでください。
+`server.json` designates `ghcr.io/soramash/google_workspace_mcp_rs` as the planned OCI package identifier. Do not present it as an available public image until it has actually been published to the registry.
 
 ## Known limitations and roadmap
 
-現在の主な制約:
+Current primary limitations:
 
-- 実Google accountを使うE2Eは環境ごとに必要
-- internal OAuth/session runtime stateはprocess-local
-- stateless modeではattachment routeを利用できない
-- `/health`は外部dependencyのreadinessを検査しない
-- OCI imageの自動publish pipelineは別途整備が必要
+- E2E testing with a real Google account is required in each environment.
+- Internal OAuth/session runtime state is process-local.
+- The attachment route is unavailable in stateless mode.
+- `/health` does not check the readiness of external dependencies.
+- An automated OCI image publishing pipeline still needs to be implemented.
 
-remote MCP運用に向けた優先roadmap:
+Priorities for remote MCP operations:
 
-1. staging環境と実Google test accountによるE2E
-2. HTTPS domain、certificate、reverse proxyの自動化
-3. secret manager連携とcredential backup policy
-4. structured logging、metrics、alerting
-5. OCI release automation、SBOM、image signing
-6. shared OAuth/session stateまたはgateway方式によるHA設計
-7. legacy Python referenceの段階的なarchiveまたは削除
+1. E2E testing in staging with a real Google test account
+2. Automation for the HTTPS domain, certificate, and reverse proxy
+3. Secret manager integration and a credential backup policy
+4. Structured logging, metrics, and alerting
+5. OCI release automation, SBOM generation, and image signing
+6. An HA design using shared OAuth/session state or a gateway
+7. Gradual archival or removal of the legacy Python reference
 
 ## License
 
-MIT License。詳細は[`LICENSE`](LICENSE)を参照してください。
+MIT License. See [`LICENSE`](LICENSE) for details.
