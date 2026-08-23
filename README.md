@@ -169,6 +169,9 @@ GOOGLE_OAUTH_REDIRECT_URI=https://mcp.example.com/oauth2callback
 WORKSPACE_MCP_HOST=0.0.0.0
 WORKSPACE_MCP_PORT=8000
 
+# Keep Dynamic Client Registration valid for 30 days in long-running deployments
+WORKSPACE_MCP_REGISTERED_CLIENT_TTL_SECONDS=2592000
+
 # List only the callbacks used by your MCP clients
 WORKSPACE_MCP_ALLOWED_CLIENT_REDIRECT_URIS=https://client.example.com/oauth/callback,http://127.0.0.1:*/callback
 
@@ -288,7 +291,7 @@ This is the default Streamable HTTP mode. MCP sessions are stored in process mem
 WORKSPACE_MCP_STATELESS_MODE=true
 ```
 
-Stateless mode is available only with OAuth 2.1. Because each MCP request can be handled independently, this mode is well suited to containers and horizontal scaling, but server-side attachment storage is unavailable.
+Stateless mode is available only with OAuth 2.1. Because each MCP request can be handled independently, this mode is well suited to container deployments, but server-side attachment storage is unavailable. Horizontal scaling is safe only when authentication state is externalized, such as with external Google bearer mode or a trusted gateway. Internal OAuth 2.1 still keeps Dynamic Client Registration, authorization codes, and tokens in process-local memory.
 
 ### Current high-availability considerations
 

@@ -169,6 +169,9 @@ GOOGLE_OAUTH_REDIRECT_URI=https://mcp.example.com/oauth2callback
 WORKSPACE_MCP_HOST=0.0.0.0
 WORKSPACE_MCP_PORT=8000
 
+# 常設運用ではDynamic Client Registrationを30日間有効にする
+WORKSPACE_MCP_REGISTERED_CLIENT_TTL_SECONDS=2592000
+
 # 利用するMCP clientのcallbackだけを列挙する
 WORKSPACE_MCP_ALLOWED_CLIENT_REDIRECT_URIS=https://client.example.com/oauth/callback,http://127.0.0.1:*/callback
 
@@ -288,7 +291,7 @@ service accountでrequestごとにDWD subjectが変わる構成では、verified
 WORKSPACE_MCP_STATELESS_MODE=true
 ```
 
-OAuth 2.1でのみ使用できます。MCP requestごとに独立して処理できるためcontainer運用と水平スケールに向きますが、server-side attachment storageは利用できません。
+OAuth 2.1でのみ使用できます。MCP requestごとに独立して処理できるためcontainer運用に向きますが、server-side attachment storageは利用できません。水平スケールが安全なのは、external Google bearer modeやtrusted gatewayなど、認証stateを外部化した構成に限られます。Internal OAuth 2.1ではDynamic Client Registration、authorization code、tokenが引き続きprocess-local memoryに保持されます。
 
 ### 現在のHA上の注意
 

@@ -2,7 +2,7 @@
 
 Deploys `workspace-mcp-rs` as a remote MCP server (Streamable HTTP) on ECS Fargate:
 
-```
+```text
 Internet ──443──> ALB (ACM cert, HTTP→HTTPS redirect, idle timeout 3600s)
                     │  target group :8000, health check /health
                     ▼
@@ -39,13 +39,66 @@ DCR + PKCE).
    - OAuth consent screen: **User type = Internal**.
    - OAuth client (type *Web application*) with authorized redirect URI
      `https://<domainName>/oauth2callback`.
-2. **Secrets Manager** — create the secret before the first deploy
-   (values shown are placeholders):
+2. **Secrets Manager** — create the secret before the first deploy. Do not put
+   secret values in command-line arguments: they may be exposed through shell
+   history or the process list. The following flow reads the client secret
+   without echoing it and passes only a mode-`0600` temporary file path to the
+   AWS CLI:
 
    ```sh
+   set +x
+   umask 077
+   secret_name=gws-mcp/oauth
+   secret_file="$(mktemp)"
+   trap 'rm -f "$secret_file"' EXIT
+
+   python3 - "$secret_file" <<'PY'
+   import getpass
+   import json
+   import secrets
+   import sys
+
+   payload = {
+       "clientId": input("Google OAuth client ID: ").strip(),
+       "clientSecret": getpass.getpass("Google OAuth client secret: "),
+       "jwtSigningKey": secrets.token_hex(32),
+   }
+   if not payload["clientId"] or not payload["clientSecret"]:
+       raise SystemExit("clientId and clientSecret must not be empty")
+   with open(sys.argv[1], "w", encoding="utf-8") as output:
+       json.dump(payload, output)
+   PY
+
    aws secretsmanager create-secret \
-     --name gws-mcp/oauth \
-     --secret-string "{\"clientId\":\"<client-id>\",\"clientSecret\":\"<client-secret>\",\"jwtSigningKey\":\"$(openssl rand -hex 32)\"}"
+     --name "$secret_name" \
+     --secret-string "file://$secret_file"
+
+   rm -f "$secret_file"
+   trap - EXIT
+   ```
+
+   Validate the stored JSON before deploying. This command sends the value
+   through a pipe and prints no secret material:
+
+   ```sh
+   secret_name="${secret_name:-gws-mcp/oauth}"
+   aws secretsmanager get-secret-value \
+     --secret-id "$secret_name" \
+     --query SecretString \
+     --output text |
+   python3 -c '
+   import json
+   import sys
+
+   value = json.load(sys.stdin)
+   required = ("clientId", "clientSecret", "jwtSigningKey")
+   missing = [key for key in required if not value.get(key)]
+   if missing:
+       raise SystemExit(f"Missing or empty keys: {missing}")
+   if len(value["jwtSigningKey"].encode("utf-8")) < 32:
+       raise SystemExit("jwtSigningKey must be at least 32 bytes")
+   print("OAuth secret validation passed")
+   '
    ```
 
 3. Docker running locally (the image is built from the repo-root `Dockerfile`
@@ -56,7 +109,7 @@ DCR + PKCE).
 
 ```sh
 cd infra
-pnpm install
+pnpm install --frozen-lockfile
 pnpm run build            # typecheck
 
 # Zone hosted in this account (cert + A-alias created automatically):

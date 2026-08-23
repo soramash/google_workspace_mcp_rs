@@ -9,23 +9,23 @@ importers:
   .:
     dependencies:
       aws-cdk-lib:
-        specifier: ^2.170.0
+        specifier: 2.266.0
         version: 2.266.0(constructs@10.8.1)
       constructs:
-        specifier: ^10.4.2
+        specifier: 10.8.1
         version: 10.8.1
     devDependencies:
       '@types/node':
-        specifier: ^22.10.0
+        specifier: 22.20.1
         version: 22.20.1
       aws-cdk:
-        specifier: ^2.170.0
+        specifier: 2.1138.0
         version: 2.1138.0
       tsx:
-        specifier: ^4.19.0
+        specifier: 4.23.12
         version: 4.23.12
       typescript:
-        specifier: ^5.7.0
+        specifier: 5.9.3
         version: 5.9.3
 
 packages:

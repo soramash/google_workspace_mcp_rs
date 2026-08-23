@@ -75,7 +75,7 @@ stateless モードとの組み合わせ: `stateless && !oauth21` のみ拒否�
 
 ### 4.3 AWS 構成の判断
 
-```
+```text
 Internet ──443──> ALB (public, ACM, HTTP→HTTPS リダイレクト, idle timeout 3600s)
                     │ target group :8000, health check /health
                     ▼
@@ -109,7 +109,7 @@ Internet ──443──> ALB (public, ACM, HTTP→HTTPS リダイレクト, idl
 1. 利用ツールに対応する API を有効化（Gmail, Calendar, Drive, Docs, Sheets, Slides, Forms, Tasks, People, Chat, Apps Script, Custom Search のうち有効化するティア分）
 2. OAuth 同意画面: **User type = Internal**（不変条件 5 の実効手段。Google の審査不要）
 3. OAuth クライアント（Web application）。Authorized redirect URI: `https://<domain>/oauth2callback`（`WORKSPACE_EXTERNAL_URL` と正確に一致させる）
-4. シークレット登録: `aws secretsmanager create-secret --name gws-mcp/oauth --secret-string '{"clientId":"...","clientSecret":"...","jwtSigningKey":"..."}'`（実値は CLI でのみ扱い、リポジトリにコミットしない）
+4. シークレット登録: `infra/README.md` の安全な手順に従い、mode `0600` の一時 JSON ファイルを `file://` で AWS CLI へ渡す。secret 値を `--secret-string` の引数へ直接記述しない（shell history・process argv・CI log への露出を防ぐ）。登録後、同手順の preflight で `clientId` / `clientSecret` / `jwtSigningKey` の存在と署名鍵長を検証する
 
 ## 7. 現在の状態と残作業
 
