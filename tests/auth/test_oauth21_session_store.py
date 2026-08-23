@@ -1,0 +1,523 @@
+import time
+from types import SimpleNamespace
+
+import pytest
+from fastmcp.server.auth.oauth_proxy.models import JTIMapping, UpstreamTokenSet
+from fastmcp.server.auth.providers.google import GoogleProvider
+from key_value.aio.stores.memory import MemoryStore
+
+import auth.oauth21_session_store as session_store
+from auth.oauth21_session_store import (
+    OAuth21SessionStore,
+    _build_credentials_from_provider,
+    ensure_session_from_access_token,
+)
+
+
+def test_oauth_state_persists_across_store_instances(tmp_path):
+    state_file = tmp_path / "oauth_states.json"
+    store_a = OAuth21SessionStore(oauth_state_file=str(state_file))
+    store_b = OAuth21SessionStore(oauth_state_file=str(state_file))
+
+    store_a.store_oauth_state(
+        "shared-state",
+        session_id="session-123",
+        code_verifier="verifier-123",
+        expected_user_email="user@example.com",
+        enforce_user_email_match=True,
+        principal_source="gateway_assertion",
+    )
+
+    state_info = store_b.validate_and_consume_oauth_state(
+        "shared-state",
+        session_id="session-123",
+    )
+
+    assert state_info["session_id"] == "session-123"
+    assert state_info["code_verifier"] == "verifier-123"
+    assert state_info["expected_user_email"] == "user@example.com"
+    assert state_info["enforce_user_email_match"] is True
+    assert state_info["principal_source"] == "gateway_assertion"
+
+
+def test_state_is_single_use(tmp_path):
+    """Finding 47: replaying a callback URL must not re-run the flow."""
+    state_file = tmp_path / "oauth_states.json"
+    store = OAuth21SessionStore(oauth_state_file=str(state_file))
+
+    store.store_oauth_state("one-shot", session_id=None, code_verifier="v")
+
+    assert store.validate_and_consume_oauth_state("one-shot")["code_verifier"] == "v"
+
+    with pytest.raises(ValueError, match="Invalid or expired OAuth state"):
+        store.validate_and_consume_oauth_state("one-shot")
+
+
+def test_state_bound_to_a_session_rejects_a_different_session(tmp_path):
+    state_file = tmp_path / "oauth_states.json"
+    store = OAuth21SessionStore(oauth_state_file=str(state_file))
+
+    store.store_oauth_state("bound", session_id="session-1", code_verifier="v")
+
+    with pytest.raises(ValueError, match="does not match the initiating session"):
+        store.validate_and_consume_oauth_state("bound", session_id="session-2")
+
+
+def test_state_bound_to_a_session_is_readable_by_a_sessionless_callback(tmp_path):
+    """HTTP callbacks carry no MCP session; the state itself names the originator.
+
+    `handle_auth_callback` adopts `state_info["session_id"]`, so credentials land on
+    the session that started the flow rather than on whoever presents the callback.
+    """
+    state_file = tmp_path / "oauth_states.json"
+    store = OAuth21SessionStore(oauth_state_file=str(state_file))
+
+    store.store_oauth_state("bound", session_id="session-1", code_verifier="v")
+
+    state_info = store.validate_and_consume_oauth_state("bound", session_id=None)
+
+    assert state_info["session_id"] == "session-1"
+    assert state_info["code_verifier"] == "v"
+
+
+def test_unknown_state_is_rejected(tmp_path):
+    state_file = tmp_path / "oauth_states.json"
+    store = OAuth21SessionStore(oauth_state_file=str(state_file))
+
+    with pytest.raises(ValueError, match="Invalid or expired OAuth state"):
+        store.validate_and_consume_oauth_state("never-issued")
+
+
+def test_states_are_shared_across_store_instances(tmp_path):
+    """The shared file is what lets the callback process see the initiator's state."""
+    state_file = tmp_path / "oauth_states.json"
+    store_a = OAuth21SessionStore(oauth_state_file=str(state_file))
+    store_b = OAuth21SessionStore(oauth_state_file=str(state_file))
+
+    store_a.store_oauth_state("shared", session_id=None, code_verifier="shared-v")
+
+    state_info = store_b.validate_and_consume_oauth_state("shared")
+
+    assert state_info["code_verifier"] == "shared-v"
+    # Consumed in the shared file, so the other instance cannot replay it either.
+    with pytest.raises(ValueError, match="Invalid or expired OAuth state"):
+        store_a.validate_and_consume_oauth_state("shared")
+
+
+def test_deserialize_oauth_state_entry_normalizes_invalid_and_naive_timestamps(
+    tmp_path,
+):
+    state_file = tmp_path / "oauth_states.json"
+    store = OAuth21SessionStore(oauth_state_file=str(state_file))
+
+    deserialized = store._deserialize_oauth_state_entry(
+        {
+            "created_at": "2026-04-21T12:00:00",
+            "expires_at": "not-a-timestamp",
+            "session_id": "session-123",
+        }
+    )
+
+    assert deserialized["created_at"] is not None
+    assert deserialized["created_at"].tzinfo is not None
+    assert deserialized["expires_at"] is None
+
+
+def test_serialize_oauth_state_preserves_missing_enforcement_marker(tmp_path):
+    store = OAuth21SessionStore(oauth_state_file=str(tmp_path / "oauth_states.json"))
+
+    serialized = store._serialize_oauth_state_entry(
+        {
+            "session_id": "session-123",
+            "code_verifier": "verifier",
+            "user_email": "old-gateway@example.com",
+        }
+    )
+
+    assert "enforce_user_email_match" not in serialized
+
+
+def test_store_session_rejects_mcp_session_rebind_by_default(tmp_path):
+    state_file = tmp_path / "oauth_states.json"
+    store = OAuth21SessionStore(oauth_state_file=str(state_file))
+
+    store.store_session(
+        user_email="account-a@example.com",
+        access_token="token-a",
+        mcp_session_id="session-123",
+    )
+
+    with pytest.raises(ValueError, match="already bound to a different user"):
+        store.store_session(
+            user_email="account-b@example.com",
+            access_token="token-b",
+            mcp_session_id="session-123",
+        )
+
+
+def test_store_session_skips_mcp_binding_in_single_user_mode(tmp_path, monkeypatch):
+    monkeypatch.setenv("MCP_SINGLE_USER_MODE", "1")
+
+    state_file = tmp_path / "oauth_states.json"
+    store = OAuth21SessionStore(oauth_state_file=str(state_file))
+
+    store.store_session(
+        user_email="account-a@example.com",
+        access_token="token-a",
+        mcp_session_id="session-123",
+    )
+    store.store_session(
+        user_email="account-b@example.com",
+        access_token="token-b",
+        mcp_session_id="session-123",
+    )
+
+    assert store.get_user_by_mcp_session("session-123") is None
+    assert store.get_credentials("account-b@example.com").token == "token-b"
+
+
+# ---------------------------------------------------------------------------
+# _build_credentials_from_provider — fastmcp 3.x jti -> upstream token lookup
+# (regression coverage for #886: refresh_token must be populated)
+# ---------------------------------------------------------------------------
+
+
+class _AsyncKVStore:
+    """Minimal async stand-in for fastmcp's PydanticAdapter key/value store."""
+
+    def __init__(self, data):
+        self._data = data
+
+    async def get(self, *, key):
+        return self._data.get(key)
+
+
+class _FakeJwtIssuer:
+    """Stand-in for OAuthProxy.jwt_issuer; only ``fastmcp-jwt`` is a valid token."""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def verify_token(self, token, expected_token_use="access"):  # noqa: ARG002
+        if token != "fastmcp-jwt":
+            raise ValueError("not a FastMCP-issued token")
+        return self._payload
+
+
+class _FakeOAuthProxy:
+    """Stand-in for a FastMCP GoogleProvider exposing the stores and issuer that
+    ``_build_credentials_from_provider`` resolves the upstream token through."""
+
+    def __init__(self, jti_mappings, upstream_tokens, jti_payload):
+        self._jti_mapping_store = _AsyncKVStore(jti_mappings)
+        self._upstream_token_store = _AsyncKVStore(upstream_tokens)
+        self.jwt_issuer = _FakeJwtIssuer(jti_payload)
+        self._upstream_client_id = "client-id-123"
+        self._upstream_client_secret = "client-secret-456"
+
+
+def _headers_with_bearer(token):
+    return lambda include=None: {"authorization": f"Bearer {token}"}
+
+
+@pytest.mark.asyncio
+async def test_build_credentials_resolves_upstream_refresh_token(monkeypatch):
+    """The credential must carry the upstream refresh token resolved via
+    jti -> _jti_mapping_store -> _upstream_token_store, not a bare token."""
+    jti = "jti-abc"
+    upstream_id = "upstream-xyz"
+    upstream = SimpleNamespace(
+        upstream_token_id=upstream_id,
+        access_token="ya29.google-access",
+        refresh_token="1//google-refresh",
+        expires_at=2_000_000_000,
+        scope="https://www.googleapis.com/auth/drive openid email",
+    )
+    provider = _FakeOAuthProxy(
+        jti_mappings={jti: SimpleNamespace(jti=jti, upstream_token_id=upstream_id)},
+        upstream_tokens={upstream_id: upstream},
+        jti_payload={"jti": jti},
+    )
+    monkeypatch.setattr(session_store, "_auth_provider", provider)
+    monkeypatch.setattr(
+        session_store, "get_http_headers", _headers_with_bearer("fastmcp-jwt")
+    )
+
+    creds = await _build_credentials_from_provider()
+
+    assert creds is not None
+    assert creds.token == "ya29.google-access"
+    assert creds.refresh_token == "1//google-refresh"
+    assert creds.client_id == "client-id-123"
+    assert creds.client_secret == "client-secret-456"
+    assert creds.token_uri == "https://oauth2.googleapis.com/token"
+    assert creds.scopes == upstream.scope.split()
+    assert creds.expiry is not None
+
+
+@pytest.mark.asyncio
+async def test_build_credentials_matches_fastmcp_oauth_proxy_contract(monkeypatch):
+    """Exercise the private FastMCP contract used to recover upstream tokens."""
+    provider = GoogleProvider(
+        client_id="google-client",
+        client_secret="google-secret",
+        base_url="https://example.test",
+        client_storage=MemoryStore(),
+        jwt_signing_key="test-signing-key",
+        required_scopes=["openid"],
+    )
+    provider.get_routes("/mcp")
+
+    now = time.time()
+    jti = "access-jti"
+    upstream_id = "upstream-id"
+    upstream = UpstreamTokenSet(
+        upstream_token_id=upstream_id,
+        access_token="ya29.google-access",
+        refresh_token="1//google-refresh",
+        refresh_token_expires_at=None,
+        expires_at=now + 3600,
+        token_type="Bearer",
+        scope="openid email",
+        client_id="mcp-client",
+        created_at=now,
+    )
+    await provider._upstream_token_store.put(key=upstream_id, value=upstream, ttl=3600)
+    await provider._jti_mapping_store.put(
+        key=jti,
+        value=JTIMapping(
+            jti=jti,
+            upstream_token_id=upstream_id,
+            created_at=now,
+        ),
+        ttl=3600,
+    )
+    bearer = provider.jwt_issuer.issue_access_token(
+        client_id="mcp-client",
+        scopes=["openid", "email"],
+        jti=jti,
+        expires_in=3600,
+    )
+
+    monkeypatch.setattr(session_store, "_auth_provider", provider)
+    monkeypatch.setattr(
+        session_store,
+        "get_http_headers",
+        _headers_with_bearer(bearer),
+    )
+
+    creds = await _build_credentials_from_provider()
+
+    assert creds is not None
+    assert creds.token == upstream.access_token
+    assert creds.refresh_token == upstream.refresh_token
+    assert creds.client_id == "google-client"
+    assert creds.client_secret == "google-secret"
+    assert creds.scopes == ["openid", "email"]
+
+
+@pytest.mark.asyncio
+async def test_build_credentials_returns_none_without_proxy_stores(monkeypatch):
+    """External OAuth 2.1 / single-user providers lack the proxy stores, so the
+    resolver returns None and the caller falls back to a minimal credential."""
+    monkeypatch.setattr(session_store, "_auth_provider", SimpleNamespace())
+    assert await _build_credentials_from_provider() is None
+
+
+@pytest.mark.asyncio
+async def test_build_credentials_returns_none_without_inbound_bearer(monkeypatch):
+    """No Authorization header (e.g. no active request) yields no jti to resolve."""
+    provider = _FakeOAuthProxy({}, {}, {"jti": "x"})
+    monkeypatch.setattr(session_store, "_auth_provider", provider)
+    monkeypatch.setattr(session_store, "get_http_headers", lambda include=None: {})
+    assert await _build_credentials_from_provider() is None
+
+
+@pytest.mark.asyncio
+async def test_build_credentials_returns_none_for_direct_google_token(monkeypatch):
+    """A raw Google token (not a FastMCP JWT) can't be mapped to a refresh token."""
+    provider = _FakeOAuthProxy({}, {}, {"jti": "x"})
+    monkeypatch.setattr(session_store, "_auth_provider", provider)
+    monkeypatch.setattr(
+        session_store, "get_http_headers", _headers_with_bearer("ya29.raw-token")
+    )
+    assert await _build_credentials_from_provider() is None
+
+
+@pytest.mark.asyncio
+async def test_build_credentials_returns_none_when_jti_mapping_missing(monkeypatch):
+    """A revoked or expired jti has no mapping, so the resolver returns None."""
+    provider = _FakeOAuthProxy(
+        jti_mappings={}, upstream_tokens={}, jti_payload={"jti": "gone"}
+    )
+    monkeypatch.setattr(session_store, "_auth_provider", provider)
+    monkeypatch.setattr(
+        session_store, "get_http_headers", _headers_with_bearer("fastmcp-jwt")
+    )
+    assert await _build_credentials_from_provider() is None
+
+
+@pytest.mark.asyncio
+async def test_ensure_session_falls_back_to_non_refreshable_credential(monkeypatch):
+    """With no proxy provider, ensure_session still returns a usable (but
+    non-refreshable) credential built directly from the access token."""
+    monkeypatch.setattr(session_store, "_auth_provider", None)
+    monkeypatch.setattr(
+        session_store,
+        "get_oauth21_session_store",
+        lambda: SimpleNamespace(store_session=lambda **kwargs: None),
+    )
+    access_token = SimpleNamespace(
+        token="ya29.direct",
+        claims={"email": "user@example.com"},
+        scopes=["https://www.googleapis.com/auth/userinfo.email"],
+        expires_at=2_000_000_000,
+    )
+
+    creds = await ensure_session_from_access_token(access_token, "user@example.com")
+
+    assert creds is not None
+    assert creds.token == "ya29.direct"
+    assert creds.refresh_token is None
+
+
+class TestCrossAccountChecksIgnoreCaseOnlyDifferences:
+    """`get_credentials_with_validation` guards must agree with `emails_match`.
+
+    All four comparisons fail closed, so a case-only difference denied access and logged
+    "SECURITY VIOLATION" for what is the same Google account. They now share one
+    predicate with `assert_matches_principal`, so the log line means what it says.
+
+    Distinct accounts must still be refused even when their casing differs too, which is
+    what separates this from simply relaxing the comparison.
+    """
+
+    def _store(self, tmp_path):
+        return OAuth21SessionStore(oauth_state_file=str(tmp_path / "oauth_states.json"))
+
+    def test_auth_token_email_matches_case_insensitively(self, tmp_path):
+        store = self._store(tmp_path)
+        store.store_session(user_email="owner@example.com", access_token="token-owner")
+
+        creds = store.get_credentials_with_validation(
+            requested_user_email="owner@example.com",
+            auth_token_email="Owner@Example.COM",
+        )
+
+        assert creds is not None
+
+    def test_auth_token_email_for_a_different_account_is_refused(self, tmp_path):
+        store = self._store(tmp_path)
+        store.store_session(
+            user_email="victim@example.com", access_token="token-victim"
+        )
+
+        creds = store.get_credentials_with_validation(
+            requested_user_email="victim@example.com",
+            auth_token_email="ATTACKER@EXAMPLE.COM",
+        )
+
+        assert creds is None
+
+    def test_session_binding_matches_case_insensitively(self, tmp_path):
+        store = self._store(tmp_path)
+        store.store_session(
+            user_email="owner@example.com",
+            access_token="token-owner",
+            session_id="oauth-session-1",
+        )
+
+        creds = store.get_credentials_with_validation(
+            requested_user_email="Owner@Example.COM",
+            session_id="oauth-session-1",
+        )
+
+        assert creds is not None
+
+    def test_mcp_session_mapping_matches_case_insensitively(self, tmp_path):
+        store = self._store(tmp_path)
+        store.store_session(
+            user_email="owner@example.com",
+            access_token="token-owner",
+            mcp_session_id="mcp-session-1",
+        )
+
+        creds = store.get_credentials_with_validation(
+            requested_user_email="OWNER@example.com",
+            session_id="mcp-session-1",
+        )
+
+        assert creds is not None
+
+    def test_session_bound_to_another_account_is_refused(self, tmp_path):
+        store = self._store(tmp_path)
+        store.store_session(
+            user_email="attacker@example.com",
+            access_token="token-attacker",
+            mcp_session_id="mcp-session-1",
+        )
+        store.store_session(
+            user_email="victim@example.com", access_token="token-victim"
+        )
+
+        creds = store.get_credentials_with_validation(
+            requested_user_email="VICTIM@EXAMPLE.COM",
+            session_id="mcp-session-1",
+        )
+
+        assert creds is None
+
+
+def test_rebinding_a_session_to_the_same_account_in_different_case_is_allowed(tmp_path):
+    """The immutable-binding guard must not fire on a case-only difference."""
+    store = OAuth21SessionStore(oauth_state_file=str(tmp_path / "oauth_states.json"))
+    store.store_session(
+        user_email="owner@example.com",
+        access_token="token-a",
+        mcp_session_id="session-123",
+    )
+
+    store.store_session(
+        user_email="Owner@Example.COM",
+        access_token="token-b",
+        mcp_session_id="session-123",
+    )
+
+    assert store.get_user_by_mcp_session("session-123") is not None
+
+
+def test_rebinding_a_session_to_a_different_account_still_raises(tmp_path):
+    """Case-insensitive comparison must not weaken the immutable binding."""
+    store = OAuth21SessionStore(oauth_state_file=str(tmp_path / "oauth_states.json"))
+    store.store_session(
+        user_email="account-a@example.com",
+        access_token="token-a",
+        mcp_session_id="session-123",
+    )
+
+    with pytest.raises(ValueError, match="already bound to a different user"):
+        store.store_session(
+            user_email="ACCOUNT-B@EXAMPLE.COM",
+            access_token="token-b",
+            mcp_session_id="session-123",
+        )
+
+
+def test_exact_session_key_wins_over_case_insensitive_resolution(tmp_path):
+    """Lenient resolution is a fallback only; an exact key must never be shadowed."""
+    store = OAuth21SessionStore(oauth_state_file=str(tmp_path / "oauth_states.json"))
+    store.store_session(user_email="Owner@Example.com", access_token="token-upper")
+    store.store_session(user_email="owner@example.com", access_token="token-lower")
+
+    assert store.get_credentials("owner@example.com").token == "token-lower"
+    assert store.get_credentials("Owner@Example.com").token == "token-upper"
+
+
+def test_unknown_account_is_not_resolved_to_some_other_session(tmp_path):
+    """The fallback must match on the whole address, not merely find *a* session."""
+    store = OAuth21SessionStore(oauth_state_file=str(tmp_path / "oauth_states.json"))
+    store.store_session(user_email="owner@example.com", access_token="token-owner")
+
+    assert store.get_credentials("someone-else@example.com") is None
+    assert store.get_credentials("owner@other.com") is None
+    assert store.get_credentials("") is None

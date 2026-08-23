@@ -1,0 +1,3 @@
+[console_scripts]
+workspace-cli = core.cli:main
+workspace-mcp = main:main

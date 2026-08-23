@@ -1,0 +1,76 @@
+runtime: "container"
+startCommand:
+  type: "http"
+  configSchema:
+    type: object
+    required:
+      - googleOauthClientId
+      - googleOauthClientSecret
+      - allowedClientRedirectUris
+    properties:
+      googleOauthClientId:
+        type: string
+        description: "Google OAuth 2.0 client ID"
+      googleOauthClientSecret:
+        type: string
+        description: "Google OAuth 2.0 client secret"
+      allowedClientRedirectUris:
+        type: string
+        description: "Comma-separated exact client redirect URIs; an ephemeral loopback port may use http://127.0.0.1:*/callback (with the client's exact path)"
+      userGoogleEmail:
+        type: string
+        default: ""
+        description: "Fixed principal used only when OAuth 2.1 is disabled"
+      googleOauthRedirectUri:
+        type: string
+        default: ""
+        description: "Google OAuth callback URL"
+      workspaceExternalUrl:
+        type: string
+        default: ""
+        description: "Public HTTPS base URL for the server"
+      workspaceMcpPort:
+        type: number
+        default: 8000
+        description: "Port the server listens on"
+      mcpEnableOauth21:
+        type: boolean
+        default: true
+        description: "Enable native OAuth 2.1"
+      googlePseApiKey:
+        type: string
+        default: ""
+        description: "Google Programmable Search API key"
+      googlePseEngineId:
+        type: string
+        default: ""
+        description: "Google Programmable Search Engine ID"
+      tools:
+        type: string
+        default: ""
+        description: "Comma-separated services to enable"
+      workspaceMcpStatelessMode:
+        type: boolean
+        default: true
+        description: "Enable stateless Streamable HTTP mode"
+  commandFunction:
+    |-
+    (config) => ({
+      command: 'workspace-mcp-rs',
+      args: ['--transport', 'streamable-http'],
+      env: {
+        GOOGLE_OAUTH_CLIENT_ID: config.googleOauthClientId,
+        GOOGLE_OAUTH_CLIENT_SECRET: config.googleOauthClientSecret,
+        WORKSPACE_MCP_ALLOWED_CLIENT_REDIRECT_URIS: config.allowedClientRedirectUris,
+        WORKSPACE_MCP_HOST: '0.0.0.0',
+        WORKSPACE_MCP_PORT: String(config.workspaceMcpPort),
+        ...(config.workspaceExternalUrl && { WORKSPACE_EXTERNAL_URL: config.workspaceExternalUrl }),
+        ...(config.googleOauthRedirectUri && { GOOGLE_OAUTH_REDIRECT_URI: config.googleOauthRedirectUri }),
+        ...(config.userGoogleEmail && { USER_GOOGLE_EMAIL: config.userGoogleEmail }),
+        ...(config.tools && config.tools.trim() !== '' && { WORKSPACE_MCP_TOOLS: config.tools }),
+        ...(config.mcpEnableOauth21 && { MCP_ENABLE_OAUTH21: 'true' }),
+        ...(config.workspaceMcpStatelessMode && { WORKSPACE_MCP_STATELESS_MODE: 'true' }),
+        ...(config.googlePseApiKey && { GOOGLE_PSE_API_KEY: config.googlePseApiKey }),
+        ...(config.googlePseEngineId && { GOOGLE_PSE_ENGINE_ID: config.googlePseEngineId })
+      }
+    })

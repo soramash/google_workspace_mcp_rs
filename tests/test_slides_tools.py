@@ -1,0 +1,617 @@
+from unittest.mock import Mock
+
+import pytest
+
+from core.utils import UserInputError
+from gslides.slides_tools import (
+    _describe_elements,
+    _extract_shape_text,
+    _iter_text_bearing_elements,
+    _speaker_notes_shape,
+    batch_update_presentation,
+    get_presentation,
+)
+
+
+def _unwrap(tool):
+    """Unwrap FunctionTool + decorators to the original async function."""
+    fn = tool.fn if hasattr(tool, "fn") else tool
+    while hasattr(fn, "__wrapped__"):
+        fn = fn.__wrapped__
+    return fn
+
+
+def _build_slides_service(presentation=None, batch_update_response=None):
+    service = Mock()
+    presentations = service.presentations.return_value
+    presentations.get.return_value.execute.return_value = presentation or {
+        "slides": [{"objectId": "p"}]
+    }
+    presentations.batchUpdate.return_value.execute.return_value = (
+        batch_update_response or {"replies": []}
+    )
+    return service, presentations
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("requests", "expected_message"),
+    [
+        ([], "requests must contain at least one request object"),
+        ([{}], "requests[0] is empty"),
+        ([{"unknownRequest": {}}], "unsupported request type 'unknownRequest'"),
+        (
+            [{"createSlide": {}, "insertText": {}}],
+            "requests[0] contains multiple fields (createSlide, insertText)",
+        ),
+        ([{"createSlide": None}], "requests[0].createSlide must be an object"),
+    ],
+)
+async def test_batch_update_rejects_invalid_request_objects(requests, expected_message):
+    service, presentations = _build_slides_service()
+
+    with pytest.raises(UserInputError) as exc_info:
+        await _unwrap(batch_update_presentation)(
+            service=service,
+            user_google_email="user@example.com",
+            presentation_id="presentation-1",
+            requests=requests,
+        )
+
+    message = str(exc_info.value)
+    assert expected_message in message
+    assert "exactly one Slides request type" in message
+    assert "createSlide" in message
+    presentations.get.assert_not_called()
+    presentations.batchUpdate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_batch_update_rejects_insert_text_targeting_slide_id():
+    service, presentations = _build_slides_service()
+
+    with pytest.raises(UserInputError) as exc_info:
+        await _unwrap(batch_update_presentation)(
+            service=service,
+            user_google_email="user@example.com",
+            presentation_id="presentation-1",
+            requests=[
+                {
+                    "insertText": {
+                        "objectId": "p",
+                        "insertionIndex": 0,
+                        "text": "Title",
+                    }
+                }
+            ],
+        )
+
+    assert "requests[0].insertText.objectId='p'" in str(exc_info.value)
+    assert "createShape" in str(exc_info.value)
+    presentations.batchUpdate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_batch_update_rejects_insert_text_targeting_other_page_ids():
+    service, presentations = _build_slides_service(
+        presentation={
+            "slides": [
+                {
+                    "objectId": "slide_1",
+                    "slideProperties": {"notesPage": {"objectId": "notes_1"}},
+                }
+            ],
+            "masters": [{"objectId": "master_1"}],
+            "layouts": [{"objectId": "layout_1"}],
+            "notesMaster": {"objectId": "notes_master_1"},
+        }
+    )
+
+    with pytest.raises(UserInputError) as exc_info:
+        await _unwrap(batch_update_presentation)(
+            service=service,
+            user_google_email="user@example.com",
+            presentation_id="presentation-1",
+            requests=[
+                {
+                    "insertText": {
+                        "objectId": "master_1",
+                        "insertionIndex": 0,
+                        "text": "Title",
+                    }
+                },
+                {
+                    "insertText": {
+                        "objectId": "layout_1",
+                        "insertionIndex": 0,
+                        "text": "Title",
+                    }
+                },
+                {
+                    "insertText": {
+                        "objectId": "notes_master_1",
+                        "insertionIndex": 0,
+                        "text": "Title",
+                    }
+                },
+                {
+                    "insertText": {
+                        "objectId": "notes_1",
+                        "insertionIndex": 0,
+                        "text": "Title",
+                    }
+                },
+            ],
+        )
+
+    message = str(exc_info.value)
+    assert "requests[0].insertText.objectId='master_1'" in message
+    assert "requests[1].insertText.objectId='layout_1'" in message
+    assert "requests[2].insertText.objectId='notes_master_1'" in message
+    assert "requests[3].insertText.objectId='notes_1'" in message
+    presentations.get.assert_called_once_with(
+        presentationId="presentation-1",
+        fields=(
+            "slides(objectId,slideProperties(notesPage(objectId,notesProperties(speakerNotesObjectId)))),masters(objectId),layouts(objectId),notesMaster(objectId)"
+        ),
+    )
+    presentations.batchUpdate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_batch_update_allows_insert_text_targeting_created_shape():
+    service, presentations = _build_slides_service(
+        batch_update_response={
+            "replies": [
+                {},
+                {"createShape": {"objectId": "title_box"}},
+                {},
+            ]
+        }
+    )
+    requests = [
+        {"createSlide": {"objectId": "slide_2"}},
+        {
+            "createShape": {
+                "objectId": "title_box",
+                "shapeType": "TEXT_BOX",
+                "elementProperties": {"pageObjectId": "slide_2"},
+            }
+        },
+        {
+            "insertText": {
+                "objectId": "title_box",
+                "insertionIndex": 0,
+                "text": "Title",
+            }
+        },
+    ]
+
+    result = await _unwrap(batch_update_presentation)(
+        service=service,
+        user_google_email="user@example.com",
+        presentation_id="presentation-1",
+        requests=requests,
+    )
+
+    call_kwargs = presentations.batchUpdate.call_args.kwargs
+    assert call_kwargs["body"] == {"requests": requests}
+    assert "Batch Update Completed" in result
+    assert "Created shape with ID title_box" in result
+
+
+@pytest.mark.asyncio
+async def test_batch_update_rejects_insert_text_targeting_new_slide_id():
+    service, presentations = _build_slides_service(presentation={"slides": []})
+
+    with pytest.raises(UserInputError) as exc_info:
+        await _unwrap(batch_update_presentation)(
+            service=service,
+            user_google_email="user@example.com",
+            presentation_id="presentation-1",
+            requests=[
+                {"createSlide": {"objectId": "slide_2"}},
+                {
+                    "insertText": {
+                        "objectId": "slide_2",
+                        "insertionIndex": 0,
+                        "text": "Title",
+                    }
+                },
+            ],
+        )
+
+    assert "requests[1].insertText.objectId='slide_2'" in str(exc_info.value)
+    presentations.batchUpdate.assert_not_called()
+
+
+# --- Tests for text-extraction helpers used by get_page / get_presentation ---
+
+
+def _text_shape(content):
+    """Build a minimal shape dict whose text is a single run with `content`."""
+    return {
+        "shape": {
+            "shapeType": "TEXT_BOX",
+            "text": {
+                "textElements": [{"startIndex": 0, "textRun": {"content": content}}]
+            },
+        }
+    }
+
+
+def test_extract_shape_text_joins_runs_in_start_index_order():
+    shape = {
+        "text": {
+            "textElements": [
+                {"startIndex": 7, "textRun": {"content": "world!"}},
+                {"startIndex": 0, "textRun": {"content": "Hello, "}},
+            ]
+        }
+    }
+    assert _extract_shape_text(shape) == "Hello, world!"
+
+
+def test_extract_shape_text_handles_missing_or_empty_inputs():
+    assert _extract_shape_text(None) == ""
+    assert _extract_shape_text({}) == ""
+    assert _extract_shape_text({"shapeType": "RECTANGLE"}) == ""
+    assert _extract_shape_text({"text": {"textElements": []}}) == ""
+
+
+def test_extract_shape_text_skips_textelements_without_textrun():
+    shape = {
+        "text": {
+            "textElements": [
+                {"startIndex": 0, "paragraphMarker": {}},
+                {"startIndex": 0, "textRun": {"content": "actual text"}},
+            ]
+        }
+    }
+    assert _extract_shape_text(shape) == "actual text"
+
+
+def test_iter_text_bearing_elements_recurses_into_groups():
+    elements = [
+        _text_shape("top-level"),
+        {
+            "elementGroup": {
+                "children": [
+                    _text_shape("nested"),
+                    {
+                        "elementGroup": {
+                            "children": [_text_shape("deep")],
+                        }
+                    },
+                ]
+            }
+        },
+    ]
+    assert list(_iter_text_bearing_elements(elements)) == [
+        "top-level",
+        "nested",
+        "deep",
+    ]
+
+
+def test_iter_text_bearing_elements_skips_empty_shapes_and_non_shape_types():
+    elements = [
+        {"shape": {"shapeType": "RECTANGLE"}},
+        {"table": {"rows": 2, "columns": 2}},
+        {"line": {"lineType": "STRAIGHT"}},
+        {"image": {}},
+        _text_shape("only-text"),
+    ]
+    assert list(_iter_text_bearing_elements(elements)) == ["only-text"]
+
+
+def test_iter_text_bearing_elements_handles_empty_and_none_input():
+    assert list(_iter_text_bearing_elements([])) == []
+    assert list(_iter_text_bearing_elements(None)) == []
+
+
+def test_describe_elements_renders_single_line_text_inline():
+    elements = [{"objectId": "s1", **_text_shape("Hello")}]
+    assert _describe_elements(elements) == [
+        '  Shape: ID s1, Type: TEXT_BOX, Text: "Hello"'
+    ]
+
+
+def test_describe_elements_renders_multiline_text_as_blockquote():
+    elements = [
+        {
+            "objectId": "s1",
+            "shape": {
+                "shapeType": "TEXT_BOX",
+                "text": {
+                    "textElements": [
+                        {
+                            "startIndex": 0,
+                            "textRun": {"content": "line one\nline two\nline three"},
+                        }
+                    ]
+                },
+            },
+        }
+    ]
+    assert _describe_elements(elements) == [
+        "  Shape: ID s1, Type: TEXT_BOX, Text:",
+        "    > line one",
+        "    > line two",
+        "    > line three",
+    ]
+
+
+def test_describe_elements_recurses_into_groups_with_deeper_indent():
+    elements = [
+        {
+            "objectId": "g1",
+            "elementGroup": {
+                "children": [
+                    {"objectId": "child1", **_text_shape("inside")},
+                    {
+                        "objectId": "g2",
+                        "elementGroup": {
+                            "children": [
+                                {"objectId": "grandchild", **_text_shape("deeper")}
+                            ]
+                        },
+                    },
+                ]
+            },
+        }
+    ]
+    assert _describe_elements(elements) == [
+        "  Group: ID g1, Children: 2",
+        '    Shape: ID child1, Type: TEXT_BOX, Text: "inside"',
+        "    Group: ID g2, Children: 1",
+        '      Shape: ID grandchild, Type: TEXT_BOX, Text: "deeper"',
+    ]
+
+
+def test_describe_elements_labels_non_text_element_types():
+    elements = [
+        {"objectId": "t1", "table": {"rows": 3, "columns": 2}},
+        {"objectId": "l1", "line": {"lineType": "STRAIGHT"}},
+        {"objectId": "x1", "speakerSpotlight": {}},
+    ]
+    assert _describe_elements(elements) == [
+        "  Table: ID t1, Size: 3x2",
+        "  Line: ID l1, Type: STRAIGHT",
+        "  Element: ID x1, Type: Unknown",
+    ]
+
+
+def test_describe_elements_surfaces_sheets_chart_source():
+    """A linked Sheets chart must expose its source spreadsheetId/chartId so a
+    caller can edit the source data and refresh the chart with refreshSheetsChart.
+    """
+    elements = [
+        {
+            "objectId": "c1",
+            "sheetsChart": {
+                "spreadsheetId": "sheet-123",
+                "chartId": 456,
+                "contentUrl": "https://example.com/chart.png",
+            },
+        }
+    ]
+    assert _describe_elements(elements) == [
+        "  SheetsChart: ID c1, SpreadsheetID sheet-123, ChartID 456"
+    ]
+
+
+def test_describe_elements_surfaces_sheets_chart_with_missing_fields():
+    elements = [{"objectId": "c1", "sheetsChart": {}}]
+    assert _describe_elements(elements) == [
+        "  SheetsChart: ID c1, SpreadsheetID Unknown, ChartID Unknown"
+    ]
+
+
+def test_describe_elements_labels_image_video_and_wordart():
+    elements = [
+        {"objectId": "i1", "image": {"sourceUrl": "https://example.com/img.png"}},
+        {"objectId": "i2", "image": {"contentUrl": "https://example.com/rendered.png"}},
+        {"objectId": "i3", "image": {}},
+        {"objectId": "v1", "video": {"source": "YOUTUBE", "id": "abc123"}},
+        {"objectId": "w1", "wordArt": {"renderedText": "Hello"}},
+        {"objectId": "w2", "wordArt": {}},
+    ]
+    assert _describe_elements(elements) == [
+        "  Image: ID i1, Source: https://example.com/img.png",
+        "  Image: ID i2, ContentURL: https://example.com/rendered.png",
+        "  Image: ID i3, Source: Unknown",
+        "  Video: ID v1, Source: YOUTUBE, VideoID: abc123",
+        '  WordArt: ID w1, Text: "Hello"',
+        "  WordArt: ID w2",
+    ]
+
+
+def test_describe_elements_keeps_shape_without_text_simple():
+    elements = [
+        {"objectId": "s1", "shape": {"shapeType": "RECTANGLE"}},
+    ]
+    assert _describe_elements(elements) == [
+        "  Shape: ID s1, Type: RECTANGLE",
+    ]
+
+
+def test_describe_elements_handles_empty_and_none_input():
+    assert _describe_elements([]) == []
+    assert _describe_elements(None) == []
+
+
+# --- Tests for speaker notes reporting and insertText redirection ---
+
+
+def _slide_with_notes(slide_id="slide_1", notes_object_id="notes_shape_1", text=None):
+    """Build a slide resource carrying a notes page, as presentations.get returns."""
+    notes_page = {
+        "objectId": f"{slide_id}_notes",
+        "notesProperties": {"speakerNotesObjectId": notes_object_id}
+        if notes_object_id
+        else {},
+        "pageElements": [],
+    }
+    if text is not None:
+        element = _text_shape(text)
+        element["objectId"] = notes_object_id
+        notes_page["pageElements"].append(element)
+    return {
+        "objectId": slide_id,
+        "slideProperties": {"notesPage": notes_page},
+    }
+
+
+def test_speaker_notes_shape_returns_id_and_text():
+    slide = _slide_with_notes(text="Talk track\n")
+    assert _speaker_notes_shape(slide) == ("notes_shape_1", "Talk track\n")
+
+
+def test_speaker_notes_shape_handles_missing_shape_and_missing_id():
+    assert _speaker_notes_shape(_slide_with_notes()) == ("notes_shape_1", "")
+    assert _speaker_notes_shape(_slide_with_notes(notes_object_id=None)) == (None, "")
+    assert _speaker_notes_shape({}) == (None, "")
+
+
+@pytest.mark.asyncio
+async def test_get_presentation_omits_speaker_notes_by_default():
+    service, _ = _build_slides_service(
+        presentation={"slides": [_slide_with_notes("slide_1", "notes_1", "Talk\n")]}
+    )
+
+    result = await _unwrap(get_presentation)(
+        service=service,
+        user_google_email="user@example.com",
+        presentation_id="presentation-1",
+    )
+
+    assert "Speaker Notes" not in result
+    assert "notes_1" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_presentation_reports_speaker_notes_when_requested():
+    service, _ = _build_slides_service(
+        presentation={
+            "slides": [
+                _slide_with_notes(
+                    "slide_1", "notes_1", "Opening remarks\nSecond line\n"
+                ),
+                _slide_with_notes("slide_2", "notes_2"),
+                _slide_with_notes("slide_3", notes_object_id=None),
+            ]
+        }
+    )
+
+    result = await _unwrap(get_presentation)(
+        service=service,
+        user_google_email="user@example.com",
+        presentation_id="presentation-1",
+        include_speaker_notes=True,
+    )
+
+    assert "    Speaker Notes Shape ID: notes_1, Notes:" in result
+    assert "      > Opening remarks" in result
+    assert "      > Second line" in result
+    assert "    Speaker Notes Shape ID: notes_2, Notes: empty" in result
+    assert "    Speaker Notes: none (slide has no notes placeholder)" in result
+
+
+@pytest.mark.asyncio
+async def test_batch_update_redirects_insert_text_from_notes_page_to_notes_shape():
+    service, presentations = _build_slides_service(
+        presentation={
+            "slides": [_slide_with_notes("slide_1", "notes_shape_1")],
+        }
+    )
+
+    with pytest.raises(UserInputError) as exc_info:
+        await _unwrap(batch_update_presentation)(
+            service=service,
+            user_google_email="user@example.com",
+            presentation_id="presentation-1",
+            requests=[
+                {
+                    "insertText": {
+                        "objectId": "slide_1_notes",
+                        "insertionIndex": 0,
+                        "text": "Talk track",
+                    }
+                }
+            ],
+        )
+
+    message = str(exc_info.value)
+    assert "requests[0].insertText.objectId='slide_1_notes'" in message
+    assert "targets a notes page" in message
+    assert "use objectId 'notes_shape_1' instead" in message
+    # The createShape guidance is wrong for notes and must not be appended.
+    assert "createShape" not in message
+    presentations.batchUpdate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_batch_update_keeps_shape_guidance_when_a_slide_id_is_also_targeted():
+    service, _ = _build_slides_service(
+        presentation={"slides": [_slide_with_notes("slide_1", "notes_shape_1")]}
+    )
+
+    with pytest.raises(UserInputError) as exc_info:
+        await _unwrap(batch_update_presentation)(
+            service=service,
+            user_google_email="user@example.com",
+            presentation_id="presentation-1",
+            requests=[
+                {
+                    "insertText": {
+                        "objectId": "slide_1_notes",
+                        "insertionIndex": 0,
+                        "text": "Notes",
+                    }
+                },
+                {
+                    "insertText": {
+                        "objectId": "slide_1",
+                        "insertionIndex": 0,
+                        "text": "Title",
+                    }
+                },
+            ],
+        )
+
+    message = str(exc_info.value)
+    assert "use objectId 'notes_shape_1' instead" in message
+    assert "requests[1].insertText.objectId='slide_1' targets a slide/page object" in (
+        message
+    )
+    assert "createShape" in message
+
+
+@pytest.mark.asyncio
+async def test_batch_update_allows_insert_text_into_the_speaker_notes_shape():
+    service, presentations = _build_slides_service(
+        presentation={
+            "slides": [_slide_with_notes("slide_1", "notes_shape_1", "Old\n")]
+        }
+    )
+    requests = [
+        {"deleteText": {"objectId": "notes_shape_1", "textRange": {"type": "ALL"}}},
+        {
+            "insertText": {
+                "objectId": "notes_shape_1",
+                "insertionIndex": 0,
+                "text": "New talk track",
+            }
+        },
+    ]
+
+    result = await _unwrap(batch_update_presentation)(
+        service=service,
+        user_google_email="user@example.com",
+        presentation_id="presentation-1",
+        requests=requests,
+    )
+
+    assert presentations.batchUpdate.call_args.kwargs["body"] == {"requests": requests}
+    assert "Batch Update Completed" in result

@@ -1,0 +1,16 @@
+{
+  "name": "io.github.soramash.google-workspace-mcp-rs",
+  "description": "Native Rust Google Workspace MCP server with 121 tools for Gmail, Drive, Calendar, Docs, Sheets, Slides, Forms, Tasks, Chat, Contacts, Apps Script, and Custom Search.",
+  "status": "active",
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/soramash/google_workspace_mcp_rs",
+      "transport": {
+        "type": "stdio"
+      },
+      "version": "0.1.0"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+services:
+  gws_mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gws_mcp
+    ports:
+      - "${PORT:-8000}:${PORT:-8000}"
+    environment:
+      WORKSPACE_MCP_HOST: "0.0.0.0"
+      WORKSPACE_MCP_PORT: "${PORT:-8000}"
+      WORKSPACE_MCP_CREDENTIALS_DIR: /var/lib/workspace-mcp/credentials
+    volumes:
+      - store_creds:/var/lib/workspace-mcp/credentials:rw
+    env_file:
+      - path: .env
+        required: false
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+
+volumes:
+  store_creds:
