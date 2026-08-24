@@ -74,7 +74,7 @@ Plugin users cannot pass CLI args directly. Use `WORKSPACE_MCP_TOOLS`, `WORKSPAC
 
 ## Deployment
 
-**Claude Desktop**: Run an instance and connect via a [Connector](https://workspacemcp.com/quick-start). See the quick start guide for full setup instructions.
+**Claude Desktop**: Run this server over Streamable HTTP and add its deployed MCP endpoint as a custom Connector in Claude Desktop.
 
 **Docker**:
 ```bash
