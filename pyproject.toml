@@ -53,7 +53,6 @@ name = "Taylor Wilsdon"
 email = "taylor@taylorwilsdon.com"
 
 [project.urls]
-Homepage = "https://workspacemcp.com"
 Repository = "https://github.com/taylorwilsdon/google_workspace_mcp"
 Documentation = "https://github.com/taylorwilsdon/google_workspace_mcp#readme"
 Issues = "https://github.com/taylorwilsdon/google_workspace_mcp/issues"
