@@ -13,7 +13,7 @@ if (typeof domainNameContext !== "string" || domainNameContext.length === 0) {
 
 const domainName = domainNameContext.trim();
 const hostnamePattern =
-  /^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
+  /^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
 const ipv4AddressPattern = /^(?:\d{1,3}\.){3}\d{1,3}$/;
 if (!hostnamePattern.test(domainName) || ipv4AddressPattern.test(domainName)) {
   throw new Error(
