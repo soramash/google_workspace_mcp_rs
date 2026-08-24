@@ -3,11 +3,22 @@ import { GwsMcpStack } from "../lib/gws-mcp-stack";
 
 const app = new cdk.App();
 
-const domainName: unknown = app.node.tryGetContext("domainName");
-if (typeof domainName !== "string" || domainName.length === 0) {
+const domainNameContext: unknown = app.node.tryGetContext("domainName");
+if (typeof domainNameContext !== "string" || domainNameContext.length === 0) {
   throw new Error(
     "Missing context 'domainName'. " +
       "Pass -c domainName=gws-mcp.example.com (or set it in cdk.json).",
+  );
+}
+
+const domainName = domainNameContext.trim();
+const hostnamePattern =
+  /^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
+const ipv4AddressPattern = /^(?:\d{1,3}\.){3}\d{1,3}$/;
+if (!hostnamePattern.test(domainName) || ipv4AddressPattern.test(domainName)) {
+  throw new Error(
+    "Invalid context 'domainName'. " +
+      "Pass a hostname such as gws-mcp.example.com without a scheme, port, or path.",
   );
 }
 
